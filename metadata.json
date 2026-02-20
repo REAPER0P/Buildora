@@ -1,0 +1,5 @@
+{
+  "name": "Buildora",
+  "description": "A powerful mobile-first web development IDE with local server simulation, project management, and APK export workflow.",
+  "requestFramePermissions": []
+}
