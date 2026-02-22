@@ -153,29 +153,58 @@ const ApkBuilder: React.FC<ApkBuilderProps> = ({ project }) => {
           fileName = `${safeProjectName}.zip`;
       }
       
-      // Upload to file.io
-      const formData = new FormData();
-      formData.append('file', blob, fileName);
-      formData.append('expires', '1d'); 
-      formData.append('maxDownloads', '1');
+      // Upload to file.io with fallback to transfer.sh
+      let downloadUrl: string | null = null;
+      
+      // Attempt 1: file.io
+      try {
+          setSuccessMsg("Uploading to file.io...");
+          const formData = new FormData();
+          formData.append('file', blob, fileName);
+          formData.append('expires', '1d'); 
+          formData.append('maxDownloads', '1');
 
-      const response = await fetch('https://file.io', {
-        method: 'POST',
-        body: formData
-      });
+          const response = await fetch('https://file.io', {
+            method: 'POST',
+            body: formData
+          });
 
-      if (!response.ok) {
-        throw new Error(`Upload failed: ${response.statusText}`);
+          if (response.ok) {
+              const data = await response.json();
+              if (data.success && data.link) {
+                  downloadUrl = data.link;
+              }
+          }
+      } catch (e) {
+          console.warn("file.io upload failed, trying fallback...", e);
       }
 
-      const data = await response.json();
-      
-      if (!data.success || !data.link) {
-         throw new Error("Failed to get download link");
+      // Attempt 2: transfer.sh (if attempt 1 failed)
+      if (!downloadUrl) {
+          try {
+              setSuccessMsg("Uploading to transfer.sh...");
+              const response = await fetch(`https://transfer.sh/${fileName}`, {
+                  method: 'PUT',
+                  body: blob
+              });
+
+              if (response.ok) {
+                  const text = await response.text();
+                  if (text && text.startsWith('http')) {
+                      downloadUrl = text.trim();
+                  }
+              }
+          } catch (e) {
+              console.error("transfer.sh upload failed", e);
+          }
+      }
+
+      if (!downloadUrl) {
+         throw new Error("Failed to upload project to cloud storage. Please check your internet connection.");
       }
 
       setSuccessMsg("Download starting...");
-      window.location.href = data.link;
+      window.location.href = downloadUrl;
 
     } catch (err: any) {
       console.error("Export error:", err);
