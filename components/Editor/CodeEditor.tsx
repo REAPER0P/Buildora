@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
 import { File, AppSettings } from '../../types';
-import { X, Loader2, AlignLeft, Sparkles, Undo, Redo, Copy, Check, Maximize } from 'lucide-react';
+import { X, Loader2, AlignLeft, Sparkles, Undo, Redo, Copy, Check, Maximize, ClipboardPaste } from 'lucide-react';
 import clsx from 'clsx';
 
 interface CodeEditorProps {
@@ -28,6 +28,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     onUpdateFiles
 }) => {
   const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingRef = useRef<HTMLDivElement>(null);
   
@@ -38,9 +39,11 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
   const [aiError, setAiError] = useState<string | null>(null);
   const [streamingCode, setStreamingCode] = useState('');
   const [copied, setCopied] = useState(false);
+  const [pasted, setPasted] = useState(false);
 
   const handleEditorDidMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+    monacoRef.current = monaco;
     
     // Auto-format on load to ensure AI generated code looks good
     setTimeout(() => {
@@ -90,6 +93,28 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
           await navigator.clipboard.writeText(value);
           setCopied(true);
           setTimeout(() => setCopied(false), 2000);
+      }
+  };
+
+  const handlePaste = async () => {
+      if (editorRef.current && monacoRef.current) {
+          try {
+              const text = await navigator.clipboard.readText();
+              const selection = editorRef.current.getSelection();
+              const range = new monacoRef.current.Range(
+                  selection.startLineNumber,
+                  selection.startColumn,
+                  selection.endLineNumber,
+                  selection.endColumn
+              );
+              const id = { major: 1, minor: 1 };
+              const op = { identifier: id, range: range, text: text, forceMoveMarkers: true };
+              editorRef.current.executeEdits("my-source", [op]);
+              setPasted(true);
+              setTimeout(() => setPasted(false), 2000);
+          } catch (err) {
+              console.error('Failed to paste:', err);
+          }
       }
   };
 
@@ -357,6 +382,13 @@ Return only raw file-separated output.`;
                 title="Copy All Code"
                >
                  {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+               </button>
+               <button 
+                onClick={handlePaste}
+                className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded text-gray-600 dark:text-gray-300"
+                title="Paste Code"
+               >
+                 {pasted ? <Check className="w-4 h-4 text-green-500" /> : <ClipboardPaste className="w-4 h-4" />}
                </button>
                <button 
                 onClick={handleSelectAll}
