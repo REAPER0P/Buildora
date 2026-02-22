@@ -153,9 +153,29 @@ const ApkBuilder: React.FC<ApkBuilderProps> = ({ project }) => {
           fileName = `${safeProjectName}.zip`;
       }
       
-      const url = URL.createObjectURL(blob);
-      setDownloadData({ url, name: fileName });
-      setSuccessMsg(`Ready to download!`);
+      // Upload to file.io
+      const formData = new FormData();
+      formData.append('file', blob, fileName);
+      formData.append('expires', '1d'); 
+      formData.append('maxDownloads', '1');
+
+      const response = await fetch('https://file.io', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error(`Upload failed: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      
+      if (!data.success || !data.link) {
+         throw new Error("Failed to get download link");
+      }
+
+      setSuccessMsg("Download starting...");
+      window.location.href = data.link;
 
     } catch (err: any) {
       console.error("Export error:", err);
@@ -243,47 +263,28 @@ const ApkBuilder: React.FC<ApkBuilderProps> = ({ project }) => {
            </div>
 
            {/* Download Button */}
-           {!downloadData ? (
-               <button 
-                 onClick={exportProject}
-                 disabled={isZipping}
-                 className={clsx(
-                   "w-full py-4 rounded-xl font-bold text-white shadow-lg transition-all flex items-center justify-center space-x-3 text-lg",
-                   isZipping 
-                    ? "bg-gray-400 cursor-not-allowed" 
-                    : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:shadow-blue-500/30 active:scale-[0.98] transform"
-                 )}
-               >
-                 {isZipping ? (
-                   <>
-                     <Loader2 className="w-6 h-6 animate-spin" />
-                     <span>Preparing...</span>
-                   </>
-                 ) : (
-                   <>
-                     <Download className="w-6 h-6" />
-                     <span>{isSingleFile ? "Prepare HTML ZIP" : "Prepare ZIP"}</span>
-                   </>
-                 )}
-               </button>
-           ) : (
-               <div className="space-y-3 animate-in fade-in slide-in-from-bottom-2">
-                   <a 
-                     href={downloadData.url}
-                     download={downloadData.name}
-                     className="w-full py-4 rounded-xl font-bold text-white shadow-lg transition-all flex items-center justify-center space-x-3 text-lg bg-green-600 hover:bg-green-700 active:scale-[0.98] transform block text-center"
-                   >
-                     <Download className="w-6 h-6" />
-                     <span>Save {downloadData.name}</span>
-                   </a>
-                   <button 
-                     onClick={() => setDownloadData(null)}
-                     className="w-full py-3 rounded-xl font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                   >
-                     Prepare Another Export
-                   </button>
-               </div>
-           )}
+           <button 
+             onClick={exportProject}
+             disabled={isZipping}
+             className={clsx(
+               "w-full py-4 rounded-xl font-bold text-white shadow-lg transition-all flex items-center justify-center space-x-3 text-lg",
+               isZipping 
+                ? "bg-gray-400 cursor-not-allowed" 
+                : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:shadow-blue-500/30 active:scale-[0.98] transform"
+             )}
+           >
+             {isZipping ? (
+               <>
+                 <Loader2 className="w-6 h-6 animate-spin" />
+                 <span>Preparing & Uploading...</span>
+               </>
+             ) : (
+               <>
+                 <Download className="w-6 h-6" />
+                 <span>{isSingleFile ? "Prepare HTML ZIP" : "Prepare ZIP"}</span>
+               </>
+             )}
+           </button>
            
            <p className="text-center text-[10px] text-gray-400 mt-6 font-mono">
              Project: {project.name}.zip
