@@ -124,79 +124,17 @@ const LivePreview: React.FC<LivePreviewProps> = ({ project, onConsoleLog }) => {
   }, [onConsoleLog]);
 
   return (
-    <div className="flex flex-col h-full bg-gray-100 dark:bg-gray-900 transition-colors">
-      {/* Header */}
-      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-2 flex justify-between items-center shadow-sm z-10 shrink-0">
-         <div className="flex items-center space-x-2">
-           <button 
-              onClick={() => setKey(k => k + 1)} 
-              className="p-2 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full"
-              title="Reload"
-            >
-              <RefreshCw className="w-4 h-4" />
-           </button>
-           
-           {/* Device Toggles - Hidden on native mobile to save space/confusion */}
-           {!isNativeMobile && (
-               <div className="flex items-center space-x-1 bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
-                  <button 
-                    onClick={() => setDevice('mobile')}
-                    className={clsx("p-1.5 rounded-md transition-all", device === 'mobile' ? "bg-white dark:bg-gray-600 shadow text-blue-600 dark:text-blue-300" : "text-gray-500 dark:text-gray-400 hover:text-gray-700")}
-                  >
-                    <Smartphone className="w-4 h-4" />
-                  </button>
-                  <button 
-                    onClick={() => setDevice('desktop')}
-                    className={clsx("p-1.5 rounded-md transition-all", device === 'desktop' ? "bg-white dark:bg-gray-600 shadow text-blue-600 dark:text-blue-300" : "text-gray-500 dark:text-gray-400 hover:text-gray-700")}
-                  >
-                    <Monitor className="w-4 h-4" />
-                  </button>
-               </div>
-           )}
-         </div>
-         
-         <div className="hidden sm:flex items-center space-x-2 text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 px-3 py-1.5 rounded-full border border-gray-200 dark:border-gray-700">
-            <div className={clsx("w-2 h-2 rounded-full", isRunning ? "bg-green-500 animate-pulse" : "bg-red-500")}></div>
-            <span className="font-medium">{isRunning ? "Server: Running" : "Server: Stopped"}</span>
-         </div>
-
-         <button 
-            onClick={() => setIsRunning(!isRunning)} 
-            className={clsx("p-2 rounded-full transition-colors", isRunning ? "text-red-500 hover:bg-red-50" : "text-green-500 hover:bg-green-50")}
-            title={isRunning ? "Stop Server" : "Start Server"}
-         >
-            {isRunning ? <StopCircle className="w-5 h-5" /> : <Play className="w-5 h-5" />}
-         </button>
-      </div>
-
-      {/* Preview Area */}
-      <div className={clsx(
-          "flex-1 flex justify-center items-start",
-          isNativeMobile ? "p-0 overflow-hidden" : "p-4 sm:p-8 overflow-auto"
-      )}>
-         <div 
-           className={clsx(
-             "bg-white transition-all duration-300 relative overflow-hidden",
-             isNativeMobile 
-                ? "w-full h-full border-0 rounded-none shadow-none" 
-                : clsx(
-                    "shadow-2xl border-8 border-gray-800 dark:border-gray-700",
-                    device === 'mobile' ? "w-[375px] h-[667px] rounded-[3rem]" : "w-full h-full max-w-5xl rounded-lg border-4"
-                )
-           )}
-         >
-            {!isNativeMobile && device === 'mobile' && (
-                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-gray-800 dark:bg-gray-700 rounded-b-xl z-20"></div>
-            )}
-            <iframe 
-                key={key}
-                title="Preview"
-                srcDoc={previewContent}
-                className="w-full h-full bg-white"
-                sandbox="allow-scripts allow-modals allow-same-origin"
-                style={{ border: 'none', overflow: 'auto' }}
-            />
-         </div>
+    <div className="flex flex-col h-full bg-white dark:bg-gray-900 transition-colors">
+      {/* Preview Area - Clean and Full Width/Height */}
+      <div className="flex-1 w-full h-full relative overflow-hidden">
+         <iframe 
+             key={key}
+             title="Preview"
+             srcDoc={previewContent}
+             className="w-full h-full bg-white"
+             sandbox="allow-scripts allow-modals allow-same-origin"
+             style={{ border: 'none', overflow: 'auto' }}
+         />
       </div>
     </div>
   );

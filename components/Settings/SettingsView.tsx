@@ -34,7 +34,7 @@ const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdate, onClear
 
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
-  const longPressTimer = useRef<NodeJS.Timeout | null>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     localStorage.setItem('buildora_saved_models', JSON.stringify(savedModels));

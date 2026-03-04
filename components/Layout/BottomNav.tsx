@@ -13,7 +13,6 @@ const BottomNav: React.FC<BottomNavProps> = ({ currentView, setView }) => {
     { id: 'projects', icon: LayoutGrid, label: 'Home' },
     { id: 'editor', icon: Code, label: 'Code' },
     { id: 'preview', icon: Server, label: 'Run' },
-    { id: 'ai', icon: Bot, label: 'AI' },
     { id: 'export', icon: Package, label: 'Export' },
     { id: 'settings', icon: Settings, label: 'Settings' },
   ];

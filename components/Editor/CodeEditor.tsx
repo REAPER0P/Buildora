@@ -1,10 +1,11 @@
 import React, { useRef, useEffect, useState } from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
-import { File, AppSettings } from '../../types';
-import { X, Loader2, AlignLeft, Sparkles, Undo, Redo, Copy, Check, Maximize, ClipboardPaste, Scissors, MessageSquare } from 'lucide-react';
+import { File, AppSettings, Project } from '../../types';
+import { X, Loader2, AlignLeft, Sparkles, Undo, Redo, Copy, Check, Maximize, ClipboardPaste, Scissors, MessageSquare, Send, Bot } from 'lucide-react';
 import clsx from 'clsx';
 
 interface CodeEditorProps {
+  project?: Project;
   file: File;
   content: string;
   onChange: (value: string) => void;
@@ -14,9 +15,11 @@ interface CodeEditorProps {
   onTabSelect?: (file: File) => void;
   onTabClose?: (id: string) => void;
   onUpdateFiles?: (files: { name: string, content: string }[]) => void;
+  onRenameProject?: (newName: string) => void;
 }
 
 const CodeEditor: React.FC<CodeEditorProps> = ({ 
+    project,
     file, 
     content, 
     onChange, 
@@ -25,24 +28,78 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     activeFileId,
     onTabSelect,
     onTabClose,
-    onUpdateFiles
+    onUpdateFiles,
+    onRenameProject
 }) => {
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingRef = useRef<HTMLDivElement>(null);
   
-  // AI Edit State
-  const [showAiModal, setShowAiModal] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [streamingCode, setStreamingCode] = useState('');
+  // AI Chat State
+  interface ChatMessage {
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+  }
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isAiTyping, setIsAiTyping] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [streamingMessage, setStreamingMessage] = useState('');
+  const [isGeneratingCode, setIsGeneratingCode] = useState(false);
+  const [generatingFiles, setGeneratingFiles] = useState<{name: string, content: string}[]>([]);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+
+  const extractGeneratingFiles = (text: string) => {
+      const files: {name: string, content: string}[] = [];
+      const regex = /===\s*([^=]+)\s*===\s*\n*```[a-z]*\n([\s\S]*?)(?:\n```|$)/gi;
+      let match;
+      while ((match = regex.exec(text)) !== null) {
+          files.push({
+              name: match[1].trim(),
+              content: match[2]
+          });
+      }
+      return files;
+  };
+
+  const stripCodeBlocks = (text: string) => {
+      // Only strip the strict format blocks that are being applied to files
+      let stripped = text.replace(/===\s*([^=]+)\s*===\s*\n*```[a-z]*\n[\s\S]*?(?:\n```|$)/gi, '');
+      // Also strip PROJECT_NAME tags
+      stripped = stripped.replace(/===\s*PROJECT_NAME:\s*([^=]+)\s*===/gi, '');
+      return stripped.trim();
+  };
+
   const [copied, setCopied] = useState(false);
   const [pasted, setPasted] = useState(false);
   
   // Selection Toolbar State
   const [toolbarPosition, setToolbarPosition] = useState<{top: number, left: number} | null>(null);
+
+  // Clear chat memory when project changes
+  useEffect(() => {
+    setChatMessages([]);
+    setIsChatOpen(false);
+    setChatInput('');
+    setStreamingMessage('');
+    setChatError(null);
+  }, [project?.id]);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    if (chatScrollRef.current) {
+        chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [chatMessages, streamingMessage, isAiTyping]);
+
+  // Auto-Analyze on first open
+  useEffect(() => {
+    if (isChatOpen && chatMessages.length === 0 && project && !isAiTyping) {
+        handleAutoAnalyze();
+    }
+  }, [isChatOpen, chatMessages.length, project]);
 
   const handleEditorDidMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
@@ -89,7 +146,7 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     if (streamingRef.current) {
         streamingRef.current.scrollTop = streamingRef.current.scrollHeight;
     }
-  }, [streamingCode]);
+  }, []);
 
   const handleFormat = () => {
       if (editorRef.current) {
@@ -163,43 +220,13 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
       }
   };
 
-  const handleCancelAi = () => {
-      if (abortControllerRef.current) {
-          abortControllerRef.current.abort();
-          abortControllerRef.current = null;
-      }
-      setAiLoading(false);
-      setShowAiModal(false);
-  };
+  const systemPrompt = `## STRICT RULES ##
 
-  const handleAiSubmit = async () => {
-    if (!aiPrompt.trim()) return;
-    if (!settings.openRouterApiKey) {
-        setAiError("API Key missing in Settings");
-        return;
-    }
-    
-    // Cancel previous request if any
-    if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-    }
-
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    
-    setAiLoading(true);
-    setAiError(null);
-    setStreamingCode('');
-
-    const systemPrompt = `## STRICT RULES ##
-
-RULE 1 - PROJECT ANALYSIS FIRST:
-When user Open any code or project, FIRST perform complete analysis:
-- Scan all files, functions, variables, dependencies
-- Understand the full architecture and logic flow
-- Identify existing bugs, issues, or improvements
-- Report a summary: "Project analyzed. Here's what I found: [summary]"
-- Never skip this step.
+RULE 1 - PROJECT ANALYSIS & CODE GENERATION:
+- You have the project context. Keep the full project structure and logic in your mind.
+- Do NOT auto-generate code unless the user explicitly asks for code or changes.
+- If the user asks a question, just answer it conversationally in a friendly, natural tone.
+- When the user asks for code, generate it using the exact format below.
 
 RULE 2 - ZERO BROKEN CODE POLICY:
 - NEVER give incomplete or broken code
@@ -212,10 +239,10 @@ RULE 3 - FULL FILE REPLACEMENT ONLY:
 - Never return partial snippets like "// rest of code remains same"
 - Always write every single line of the file
 
-RULE 4 - CHANGE TRACKING:
-- Before making changes, list exactly what you will change and why
-- After changes, list what was changed with line numbers
-- Format: "CHANGED: [what] → [why]"
+RULE 4 - CHANGE TRACKING & FRIENDLY COMMUNICATION:
+- Communicate in a friendly, conversational manner.
+- When you generate or modify code, clearly explain in your conversational response exactly what changes you made and in which files/locations.
+- Keep explanations concise and easy to understand.
 
 RULE 5 - ERROR PREVENTION:
 - Before finalizing code, mentally run it step by step
@@ -231,29 +258,35 @@ RULE 7 - LANGUAGE CONSISTENCY:
 - Do not introduce new patterns without asking
 
 RULE 8 - RESPONSE FORMAT:
-Always respond in this format:
-📊 ANALYSIS: [what you understood]
-🔧 CHANGES PLANNED: [list of changes]
-✅ FINAL CODE:
-\`\`\`[language]
+When generating code, ALWAYS use this exact format for EACH file (even if it's just one file):
+=== filename.ext ===
+\`\`\`language
 [complete working code]
 \`\`\`
-⚠️ IMPORTANT NOTES: [any warnings or things user should know]
 
-If modifying multiple files, use this format for the code section:
-✅ FINAL CODE:
-=== index.html ===
-\`\`\`html
-[code]
-\`\`\`
-=== style.css ===
-\`\`\`css
-[code]
-\`\`\`
-=== script.js ===
-\`\`\`javascript
-[code]
-\`\`\``;
+RULE 9 - PROJECT RENAMING:
+If the user asks you to create a completely new project, tool, or app, and the current project name is generic (like "Untitled Project"), you MUST suggest a short, catchy name for the project by including this exact format anywhere in your response:
+=== PROJECT_NAME: [Your Suggested Name] ===
+
+Do not include the code blocks in your conversational response, they will be intercepted by the UI.
+`;
+
+  const handleAutoAnalyze = async () => {
+    if (!settings.openRouterApiKey || !project) return;
+    
+    setIsAiTyping(true);
+    setChatError(null);
+    setStreamingMessage('');
+
+    const projectContext = project.files.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
+    const analyzePrompt = `Analyze this project named "${project.name}". Here is the code:\n\n${projectContext}\n\nPlease keep the entire project context in your mind. Reply with a very friendly, normal conversational message. Just mention the main important topics or what the project is about briefly. Do NOT give a long, detailed technical brief.`;
+
+    const newMessages: ChatMessage[] = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: analyzePrompt }
+    ];
+    
+    setChatMessages([{ role: 'user', content: "Analyze this project." }]);
 
     try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -266,32 +299,13 @@ If modifying multiple files, use this format for the code section:
             },
             body: JSON.stringify({
                 model: settings.openRouterModel || "stepfun/step-3.5-flash:free",
-                messages: [
-                    {
-                        role: "system",
-                        content: systemPrompt
-                    },
-                    {
-                        role: "user",
-                        content: `Current File: ${file.name}\nLanguage: ${file.language}\n\nCode:\n${content}\n\nInstruction: ${aiPrompt}`
-                    }
-                ],
-                temperature: 0.85,
-                top_p: 0.95,
-                frequency_penalty: 0.3,
-                presence_penalty: 0.3,
+                messages: newMessages,
+                temperature: 0.7,
                 stream: true
-            }),
-            signal: controller.signal
+            })
         });
         
-        if (!response.ok) {
-            if (response.status === 401) {
-                throw new Error("Invalid API Key. Please check your OpenRouter API Key in Settings.");
-            }
-            throw new Error(`API Error: ${response.status}`);
-        }
-
+        if (!response.ok) throw new Error(`API Error: ${response.status}`);
         if (!response.body) throw new Error("ReadableStream not supported");
 
         const reader = response.body.getReader();
@@ -305,94 +319,168 @@ If modifying multiple files, use this format for the code section:
             
             const chunk = decoder.decode(value, { stream: true });
             buffer += chunk;
-            
             const lines = buffer.split('\n');
             buffer = lines.pop() || ""; 
             
             for (const line of lines) {
                 const trimmed = line.trim();
                 if (!trimmed || trimmed === 'data: [DONE]') continue;
-                
                 if (trimmed.startsWith('data: ')) {
                     try {
                         const json = JSON.parse(trimmed.slice(6));
                         const delta = json.choices?.[0]?.delta?.content || "";
                         if (delta) {
                             fullContent += delta;
-                            setStreamingCode(prev => prev + delta);
+                            setStreamingMessage(prev => prev + delta);
                         }
-                    } catch (e) {
-                        // Ignore parse errors for partial chunks
-                    }
+                    } catch (e) {}
                 }
             }
         }
 
-        if (!fullContent) throw new Error("No code returned from AI");
+        setChatMessages(prev => [...prev, { role: 'assistant', content: fullContent }]);
+        setStreamingMessage('');
+    } catch (err: any) {
+        setChatError(err.message || "Failed to analyze project");
+    } finally {
+        setIsAiTyping(false);
+    }
+  };
+
+  const handleChatSubmit = async (e?: React.FormEvent, overridePrompt?: string) => {
+    if (e) e.preventDefault();
+    const promptToSend = overridePrompt || chatInput;
+    if (!promptToSend.trim() || isAiTyping) return;
+    if (!settings.openRouterApiKey) {
+        setChatError("API Key missing in Settings");
+        return;
+    }
+
+    if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    
+    setIsAiTyping(true);
+    setChatError(null);
+    setStreamingMessage('');
+    if (!overridePrompt) setChatInput('');
+
+    // Add user message to UI
+    const userMsg: ChatMessage = { role: 'user', content: promptToSend };
+    setChatMessages(prev => [...prev, userMsg]);
+
+    // Build context with last 20 messages + current file context
+    const projectContext = project ? project.files.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n') : `Current File: ${file.name}\nCode:\n${content}`;
+    
+    // Keep last 20 messages
+    const recentMessages = chatMessages.slice(-20);
+    
+    const apiMessages = [
+        { role: 'system', content: systemPrompt },
+        ...recentMessages.map(m => ({ role: m.role, content: m.content })),
+        { role: 'user', content: `[Current Project State]\n${projectContext}\n\nUser Request: ${promptToSend}` }
+    ];
+
+    try {
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${settings.openRouterApiKey}`,
+              "Content-Type": "application/json",
+              "HTTP-Referer": window.location.href,
+              "X-Title": "Buildora",
+            },
+            body: JSON.stringify({
+                model: settings.openRouterModel || "stepfun/step-3.5-flash:free",
+                messages: apiMessages,
+                temperature: 0.7,
+                stream: true
+            }),
+            signal: controller.signal
+        });
         
-        // Parse multi-file format
-        const extractContent = (marker: string) => {
-            // Try to match with markdown code blocks first
-            const regex = new RegExp(`=== ${marker} ===\\s*\\n*\`\`\`[a-z]*\\n([\\s\\S]*?)\\n\`\`\``, 'i');
-            const match = fullContent.match(regex);
-            if (match) return match[1].trim();
-            
-            // Fallback to format without markdown ticks
-            const regexOld = new RegExp(`=== ${marker} ===\\s*([\\s\\S]*?)(?=\\n===|\\n⚠️|$)`, 'i');
-            const matchOld = fullContent.match(regexOld);
-            return matchOld ? matchOld[1].replace(/^```[a-z]*\n/i, '').replace(/\n```$/, '').trim() : null;
-        };
+        if (!response.ok) {
+            if (response.status === 401) throw new Error("Invalid API Key.");
+            throw new Error(`API Error: ${response.status}`);
+        }
+        if (!response.body) throw new Error("ReadableStream not supported");
 
-        const html = extractContent('index.html');
-        const css = extractContent('style.css');
-        const js = extractContent('script.js');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullContent = "";
+        let buffer = "";
 
-        if ((html || css || js) && onUpdateFiles) {
-            const updates = [];
-            if (html) updates.push({ name: 'index.html', content: html });
-            if (css) updates.push({ name: 'style.css', content: css });
-            if (js) updates.push({ name: 'script.js', content: js });
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
             
-            onUpdateFiles(updates);
-        } else {
-            // Fallback for single file
-            let newCode = fullContent;
+            const chunk = decoder.decode(value, { stream: true });
+            buffer += chunk;
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || ""; 
             
-            // Try to extract from ✅ FINAL CODE section
-            const finalCodeMatch = fullContent.match(/✅ FINAL CODE:\s*\n*\`\`\`[a-z]*\n([\\s\\S]*?)\n\`\`\`/i);
-            if (finalCodeMatch) {
-                newCode = finalCodeMatch[1].trim();
-            } else {
-                // Try to find any code block
-                const codeBlockMatch = fullContent.match(/\`\`\`[a-z]*\n([\\s\\S]*?)\n\`\`\`/i);
-                if (codeBlockMatch) {
-                    newCode = codeBlockMatch[1].trim();
-                } else {
-                    newCode = fullContent.replace(/^```[a-z]*\n/i, '').replace(/\n```$/, '').trim();
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed === 'data: [DONE]') continue;
+                if (trimmed.startsWith('data: ')) {
+                    try {
+                        const json = JSON.parse(trimmed.slice(6));
+                        const delta = json.choices?.[0]?.delta?.content || "";
+                        if (delta) {
+                            fullContent += delta;
+                            
+                            const files = extractGeneratingFiles(fullContent);
+                            if (files.length > 0) {
+                                setIsGeneratingCode(true);
+                                setGeneratingFiles(files);
+                            }
+                            
+                            const textOnly = stripCodeBlocks(fullContent);
+                            setStreamingMessage(textOnly);
+                        }
+                    } catch (e) {}
                 }
             }
-            
-            onChange(newCode);
+        }
+
+        const finalFiles = extractGeneratingFiles(fullContent);
+        let textOnly = stripCodeBlocks(fullContent);
+
+        // Check for project renaming
+        const projectNameMatch = fullContent.match(/===\s*PROJECT_NAME:\s*([^=]+)\s*===/i);
+        if (projectNameMatch && onRenameProject) {
+            const newName = projectNameMatch[1].trim();
+            onRenameProject(newName);
+            // Remove the project name tag from the visible text
+            textOnly = textOnly.replace(/===\s*PROJECT_NAME:\s*([^=]+)\s*===/i, '').trim();
+        }
+
+        setChatMessages(prev => [...prev, { role: 'assistant', content: textOnly }]);
+        setStreamingMessage('');
+        
+        // Auto-hide terminal after a short delay so user can see completion
+        setTimeout(() => {
+            setIsGeneratingCode(false);
+            setGeneratingFiles([]);
+        }, 1500);
+
+        if (finalFiles.length > 0 && onUpdateFiles) {
+            onUpdateFiles(finalFiles);
         }
         
-        setShowAiModal(false);
-        setAiPrompt('');
-        setStreamingCode('');
-        
-        // Auto format after update
         setTimeout(() => {
              editorRef.current?.getAction('editor.action.formatDocument')?.run();
         }, 200);
 
     } catch (err: any) {
-        if (err.name === 'AbortError') {
-            console.log("AI generation cancelled");
-        } else {
-            setAiError(err.message || "Failed to generate changes");
+        if (err.name !== 'AbortError') {
+            setChatError(err.message || "Failed to generate response");
         }
     } finally {
         if (abortControllerRef.current === controller) {
-            setAiLoading(false);
+            setIsAiTyping(false);
             abortControllerRef.current = null;
         }
     }
@@ -482,11 +570,14 @@ If modifying multiple files, use this format for the code section:
                  <Maximize className="w-4 h-4" />
                </button>
                <button 
-                onClick={() => setShowAiModal(true)}
-                className="p-1.5 hover:bg-purple-100 dark:hover:bg-purple-900/30 rounded text-purple-600 dark:text-purple-400"
-                title="AI Modify Code"
+                onClick={() => setIsChatOpen(!isChatOpen)}
+                className={clsx(
+                    "p-1.5 rounded transition-colors",
+                    isChatOpen ? "bg-purple-100 dark:bg-purple-900/50 text-purple-600 dark:text-purple-400" : "hover:bg-purple-100 dark:hover:bg-purple-900/30 text-gray-600 dark:text-gray-300 hover:text-purple-600 dark:hover:text-purple-400"
+                )}
+                title="AI Assistant"
                >
-                 <Sparkles className="w-4 h-4" />
+                 <Bot className="w-4 h-4" />
                </button>
                <button 
                 onClick={handleFormat}
@@ -584,8 +675,8 @@ If modifying multiple files, use this format for the code section:
                             const selection = editorRef.current?.getSelection();
                             const text = editorRef.current?.getModel()?.getValueInRange(selection);
                             if (text) {
-                                setAiPrompt(`Refactor this code:\n\n${text}`);
-                                setShowAiModal(true);
+                                setChatInput(`Refactor this code:\n\n${text}`);
+                                setIsChatOpen(true);
                             }
                             setToolbarPosition(null);
                         }}
@@ -597,93 +688,157 @@ If modifying multiple files, use this format for the code section:
                 </div>
             )}
             
-            {/* AI Edit Modal Overlay */}
-            {showAiModal && (
-                <div className="absolute inset-0 z-50 bg-black/50 backdrop-blur-[1px] flex items-start justify-center pt-10 px-4 animate-in fade-in duration-200">
-                    <div className="bg-white dark:bg-[#252526] w-full max-w-md rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
-                        {/* Header */}
-                        <div className="px-3 py-3 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-[#2d2d2d]">
-                            <div className="flex items-center space-x-2">
-                                <div className="p-1 bg-purple-100 dark:bg-purple-900/30 rounded">
-                                   <Sparkles className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-                                </div>
-                                <span className="font-semibold text-xs text-gray-700 dark:text-gray-200">AI Modify Code (Modern UI)</span>
+            {/* Code Generation Terminal Popup */}
+            {isGeneratingCode && (
+                <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+                    <div className="bg-[#1e1e1e] border border-gray-700 rounded-xl shadow-2xl w-full max-w-3xl h-[80vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+                        <div className="flex items-center justify-between px-4 py-3 bg-[#252526] border-b border-gray-700">
+                            <div className="flex items-center space-x-3">
+                                <Loader2 className="w-5 h-5 text-purple-500 animate-spin" />
+                                <h3 className="text-gray-200 font-medium text-sm flex items-center space-x-2">
+                                    <span>AI is writing code...</span>
+                                    {generatingFiles.length > 0 && (
+                                        <span className="px-2 py-0.5 bg-purple-500/20 text-purple-400 rounded-md text-xs font-mono">
+                                            {generatingFiles[generatingFiles.length - 1].name}
+                                        </span>
+                                    )}
+                                </h3>
                             </div>
-                            <button onClick={handleCancelAi} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+                            <button 
+                                onClick={() => {
+                                    if (abortControllerRef.current) {
+                                        abortControllerRef.current.abort();
+                                        abortControllerRef.current = null;
+                                    }
+                                    setIsGeneratingCode(false);
+                                    setIsAiTyping(false);
+                                }}
+                                className="p-1.5 hover:bg-gray-700 rounded-md text-gray-400 transition-colors"
+                                title="Stop Generation"
+                            >
                                 <X className="w-4 h-4" />
                             </button>
                         </div>
-                        
-                        {/* Body */}
-                        <div className="p-3">
-                            {aiError && (
-                                <div className="mb-2 p-2 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-xs rounded border border-red-100 dark:border-red-900/30 flex items-center space-x-2">
-                                    <span>⚠️</span>
-                                    <span>{aiError}</span>
-                                </div>
-                            )}
-                            
-                            {!settings.openRouterApiKey && (
-                                <div className="mb-2 p-2 bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-400 text-xs rounded border border-yellow-100 dark:border-yellow-900/30">
-                                    Please set your API Key in Settings to use this feature.
-                                </div>
-                            )}
-                            
-                            <textarea 
-                                value={aiPrompt}
-                                onChange={e => setAiPrompt(e.target.value)}
-                                disabled={aiLoading}
-                                placeholder={`Describe how to modify ${file.name}...\n\nExamples:\n- Apply glassmorphism to the card\n- Use a gradient background\n- Add hover animations to buttons`}
-                                className={clsx(
-                                    "w-full text-sm p-3 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-[#1e1e1e] text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-purple-500/50 outline-none resize-none placeholder:text-gray-400 transition-all",
-                                    aiLoading ? "h-0 opacity-0 p-0 border-0 overflow-hidden" : "h-32"
-                                )}
-                                autoFocus
-                            />
-
-                            {aiLoading && (
-                                <div 
-                                    ref={streamingRef}
-                                    className="w-full h-64 bg-[#1e1e1e] text-green-400 font-mono text-xs p-3 overflow-auto rounded-lg border border-gray-700 shadow-inner"
-                                >
-                                    <div className="flex items-center space-x-2 mb-2 border-b border-gray-700 pb-2">
-                                        <Loader2 className="w-3 h-3 animate-spin" />
-                                        <span className="font-bold">AI Generating Code...</span>
+                        <div className="flex-1 overflow-auto p-4 bg-[#1e1e1e]">
+                            {generatingFiles.map((file, idx) => (
+                                <div key={idx} className="mb-6 last:mb-0">
+                                    <div className="text-xs text-gray-400 mb-2 font-mono flex items-center space-x-2">
+                                        <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                                        <span>{file.name}</span>
                                     </div>
-                                    <pre className="whitespace-pre-wrap break-all">
-                                        {streamingCode || "Initializing stream..."}
+                                    <pre className="text-sm text-gray-300 font-mono whitespace-pre-wrap break-all">
+                                        <code>{file.content}</code>
                                     </pre>
                                 </div>
-                            )}
-                            
-                            <div className="flex justify-end mt-3">
-                                <button
-                                    onClick={handleAiSubmit}
-                                    disabled={!aiPrompt.trim() || aiLoading || !settings.openRouterApiKey}
-                                    className={clsx(
-                                        "flex items-center space-x-2 px-4 py-2 rounded-lg text-xs font-medium transition-all",
-                                        !aiPrompt.trim() || aiLoading || !settings.openRouterApiKey
-                                            ? "bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed"
-                                            : "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white shadow-md hover:shadow-lg"
-                                    )}
-                                >
-                                    {aiLoading ? (
-                                        <>
-                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                            <span>Designing...</span>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Sparkles className="w-3.5 h-3.5" />
-                                            <span>Generate Modern UI</span>
-                                        </>
-                                    )}
-                                </button>
-                            </div>
+                            ))}
                         </div>
                     </div>
                 </div>
             )}
+            
+            {/* AI Chat Panel */}
+            <div className={clsx(
+                "absolute top-0 right-0 bottom-0 w-full sm:w-80 bg-white dark:bg-[#252526] border-l border-gray-200 dark:border-gray-700 shadow-2xl z-40 flex flex-col transition-transform duration-300",
+                isChatOpen ? "translate-x-0" : "translate-x-full"
+            )}>
+                {/* Header */}
+                <div className="flex items-center justify-between p-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#2d2d2d]">
+                    <div className="flex items-center space-x-2">
+                        <Bot className="w-5 h-5 text-purple-500" />
+                        <span className="font-semibold text-sm text-gray-700 dark:text-gray-200">AI Assistant</span>
+                    </div>
+                    <button onClick={() => setIsChatOpen(false)} className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-md text-gray-500">
+                        <X className="w-4 h-4" />
+                    </button>
+                </div>
+
+                {/* Chat Messages */}
+                <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/50 dark:bg-[#1e1e1e]">
+                    {chatMessages.filter(m => m.role !== 'system').map((msg, idx) => (
+                        <div key={idx} className={clsx("flex flex-col", msg.role === 'user' ? "items-end" : "items-start")}>
+                            <div className={clsx(
+                                "max-w-[90%] rounded-xl p-3 text-sm",
+                                msg.role === 'user' 
+                                    ? "bg-purple-600 text-white rounded-tr-sm" 
+                                    : "bg-white dark:bg-[#2d2d2d] text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-tl-sm shadow-sm"
+                            )}>
+                                <div className="whitespace-pre-wrap break-words font-sans">
+                                    {msg.content}
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                    
+                    {streamingMessage && (
+                        <div className="flex flex-col items-start">
+                            <div className="max-w-[90%] rounded-xl p-3 text-sm bg-white dark:bg-[#2d2d2d] text-gray-800 dark:text-gray-200 border border-gray-200 dark:border-gray-700 rounded-tl-sm shadow-sm">
+                                <div className="whitespace-pre-wrap break-words font-sans">
+                                    {streamingMessage}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {isAiTyping && !streamingMessage && (
+                        <div className="flex items-center space-x-2 text-gray-400 text-xs p-2">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <span>AI is thinking...</span>
+                        </div>
+                    )}
+                    
+                    {chatError && (
+                        <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-red-600 dark:text-red-400 text-xs">
+                            {chatError}
+                        </div>
+                    )}
+                </div>
+
+                {/* Input Area */}
+                <div className="p-3 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-[#252526]">
+                    <form onSubmit={handleChatSubmit} className="flex items-end space-x-2">
+                        <textarea
+                            value={chatInput}
+                            onChange={(e) => setChatInput(e.target.value)}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleChatSubmit(e);
+                                }
+                            }}
+                            placeholder="Ask AI to analyze or code..."
+                            className="flex-1 max-h-32 min-h-[40px] p-2 text-sm bg-gray-100 dark:bg-[#1e1e1e] border border-transparent focus:border-purple-500 dark:focus:border-purple-500 rounded-lg resize-none outline-none text-gray-800 dark:text-gray-200"
+                            rows={1}
+                        />
+                        {isAiTyping ? (
+                            <button 
+                                type="button"
+                                onClick={() => {
+                                    if (abortControllerRef.current) {
+                                        abortControllerRef.current.abort();
+                                        abortControllerRef.current = null;
+                                    }
+                                    setIsAiTyping(false);
+                                }}
+                                className="p-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors flex-shrink-0"
+                                title="Stop Generation"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        ) : (
+                            <button 
+                                type="submit"
+                                disabled={!chatInput.trim()}
+                                className="p-2.5 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 text-white rounded-lg transition-colors flex-shrink-0"
+                            >
+                                <Send className="w-4 h-4" />
+                            </button>
+                        )}
+                    </form>
+                    <div className="text-[10px] text-center text-gray-400 mt-2">
+                        AI reads your project and writes code directly.
+                    </div>
+                </div>
+            </div>
       </div>
       
       {/* Footer Info */}

@@ -9,7 +9,6 @@ import LivePreview from './components/Preview/LivePreview';
 import ApkBuilder from './components/Export/ApkBuilder';
 import SettingsView from './components/Settings/SettingsView';
 import ConsolePanel from './components/Layout/ConsolePanel';
-import AIChat from './components/AI/AIChat';
 import { Menu, Play, Settings as SettingsIcon, FolderOpen, ChevronLeft, FilePlus, Upload, Terminal, Square } from 'lucide-react';
 import clsx from 'clsx';
 import JSZip from 'jszip';
@@ -555,7 +554,7 @@ const App: React.FC = () => {
            <ChevronLeft className="w-6 h-6" />
         </button>
         <h1 className={`text-lg font-bold capitalize ${textClass}`}>
-            {view === 'export' ? 'APK Build Studio' : view === 'ai' ? 'AI Assistant' : view}
+            {view === 'export' ? 'APK Build Studio' : view}
         </h1>
       </header>
     );
@@ -595,6 +594,7 @@ const App: React.FC = () => {
             <div className="flex-1 flex flex-col h-full relative">
                {activeFile ? (
                  <CodeEditor 
+                   project={activeProject}
                    file={activeFile} 
                    content={activeFile.content} 
                    onChange={handleUpdateFileContent}
@@ -604,6 +604,7 @@ const App: React.FC = () => {
                    onTabSelect={setActiveFile}
                    onTabClose={handleCloseTab}
                    onUpdateFiles={handleUpdateMultipleFiles}
+                   onRenameProject={(newName) => handleRenameProject(activeProject.id, newName)}
                  />
                ) : (
                  <div className="flex-1 flex flex-col items-center justify-center text-gray-400 dark:text-gray-500 bg-white dark:bg-[#282c34] transition-colors">
@@ -664,13 +665,6 @@ const App: React.FC = () => {
 
           {view === 'export' && activeProject && (
             <ApkBuilder project={activeProject} />
-          )}
-
-          {view === 'ai' && (
-             <AIChat 
-                settings={settings}
-                onNavigateSettings={() => setView('settings')}
-             />
           )}
           
           {view === 'settings' && (
