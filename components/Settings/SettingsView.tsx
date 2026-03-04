@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { AppSettings } from '../../types';
-import { Moon, Sun, Type, Save, WrapText, Trash, AlertTriangle, Bot, Key, Cpu } from 'lucide-react';
+import { Moon, Sun, Type, Save, WrapText, AlertTriangle, Bot, Key, Cpu, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 
 interface SettingsViewProps {
@@ -11,6 +11,101 @@ interface SettingsViewProps {
 
 const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdate, onClearData }) => {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  
+  // Model Selection State
+  const [savedModels, setSavedModels] = useState<string[]>(() => {
+    const saved = localStorage.getItem('buildora_saved_models');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {}
+    }
+    return [
+      "stepfun/step-3.5-flash:free",
+      "arcee-ai/trinity-large-preview:free",
+      "qwen/qwen3-coder:free",
+      "openai/gpt-oss-120b",
+      "nvidia/nemotron-3-nano-30b-a3b:free",
+      "qwen/qwen3-next-80b-a3b-instruct",
+      "mistralai/mistral-7b-instruct",
+      "openrouter/free:free"
+    ];
+  });
+
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [testMessage, setTestMessage] = useState('');
+  const longPressTimer = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('buildora_saved_models', JSON.stringify(savedModels));
+  }, [savedModels]);
+
+  const getShortName = (modelId: string) => {
+    const parts = modelId.split('/');
+    const namePart = parts.length > 1 ? parts[1] : parts[0];
+    const cleanName = namePart.split(':')[0].replace(/-/g, ' ').replace(/_/g, ' ');
+    return cleanName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  };
+
+  const handleTouchStart = (model: string) => {
+    longPressTimer.current = setTimeout(() => {
+      setSavedModels(prev => prev.filter(m => m !== model));
+      if (navigator.vibrate) navigator.vibrate(50);
+    }, 600);
+  };
+
+  const handleTouchEnd = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const handleTestConnection = async () => {
+    const model = settings.openRouterModel;
+    const apiKey = settings.openRouterApiKey;
+
+    if (!model || !apiKey) {
+      setTestStatus('error');
+      setTestMessage('API Key and Model Name are required.');
+      return;
+    }
+
+    setTestStatus('testing');
+    setTestMessage('Testing...');
+
+    try {
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": window.location.href,
+          "X-Title": "Buildora",
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [{ role: "user", content: "Hello" }],
+          max_tokens: 5
+        })
+      });
+
+      if (response.ok) {
+        setTestStatus('success');
+        setTestMessage(`✅ openrouter — ${model} ready!`);
+        
+        if (!savedModels.includes(model)) {
+          setSavedModels(prev => [model, ...prev]);
+        }
+      } else {
+        setTestStatus('error');
+        setTestMessage(`❌ ${model} is not a valid model or API key is incorrect.`);
+      }
+    } catch (err) {
+      setTestStatus('error');
+      setTestMessage(`❌ Failed to connect to OpenRouter.`);
+    }
+  };
 
   return (
     <div className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-950 p-4 sm:p-8 transition-colors">
@@ -167,23 +262,90 @@ const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdate, onClear
                 <input 
                     type="text"
                     value={settings.openRouterModel || ''}
-                    onChange={(e) => onUpdate({...settings, openRouterModel: e.target.value})}
+                    onChange={(e) => {
+                        onUpdate({...settings, openRouterModel: e.target.value});
+                        setTestStatus('idle');
+                        setTestMessage('');
+                    }}
                     placeholder="arcee-ai/trinity-large-preview:free"
                     className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500 outline-none dark:bg-gray-700 dark:text-white"
                 />
-                <div className="mt-2">
-                  <p className="text-xs text-gray-500 mb-1">Enter any OpenRouter model ID. Best Models:</p>
-                  <ol className="list-decimal pl-5 text-xs text-gray-500 space-y-1">
-                    <li>stepfun/step-3.5-flash:free</li>
-                    <li>arcee-ai/trinity-large-preview:free</li>
-                    <li>z-ai/glm-4.5-air:free</li>
-                    <li>qwen/qwen3-coder:free</li>
-                    <li>openai/gpt-oss-120b</li>
-                    <li>nvidia/nemotron-3-nano-30b-a3b:free</li>
-                    <li>qwen/qwen3-next-80b-a3b-instruct</li>
-                    <li>mistralai/mistral-7b-instruct</li>
-                    <li>openrouter/free:free</li>
-                  </ol>
+                
+                <div className="mt-3">
+                  <div className="flex flex-wrap gap-2">
+                    {savedModels.map(model => (
+                      <button
+                        key={model}
+                        onClick={() => {
+                            onUpdate({...settings, openRouterModel: model});
+                            setTestStatus('idle');
+                            setTestMessage('');
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setSavedModels(prev => prev.filter(m => m !== model));
+                        }}
+                        onTouchStart={() => handleTouchStart(model)}
+                        onTouchEnd={handleTouchEnd}
+                        onTouchCancel={handleTouchEnd}
+                        className={clsx(
+                          "px-3 py-1.5 rounded-full text-xs font-medium border flex items-center space-x-1 transition-colors select-none",
+                          settings.openRouterModel === model 
+                            ? "bg-teal-50 dark:bg-teal-900/30 border-teal-200 dark:border-teal-800 text-teal-700 dark:text-teal-400" 
+                            : "bg-gray-50 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                        )}
+                      >
+                        <span>{getShortName(model)}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-gray-400 mt-2">Long press or right-click a model to remove it.</p>
+                </div>
+
+                {/* Test Connection Button */}
+                <div className="mt-4">
+                    <button
+                        onClick={handleTestConnection}
+                        disabled={testStatus === 'testing' || !settings.openRouterModel || !settings.openRouterApiKey}
+                        className={clsx(
+                            "w-full py-2.5 rounded-lg text-sm font-medium flex items-center justify-center space-x-2 transition-all",
+                            testStatus === 'testing' ? "bg-blue-600 text-white" :
+                            testStatus === 'success' ? "bg-green-600 text-white hover:bg-green-700" :
+                            testStatus === 'error' ? "bg-red-600 text-white hover:bg-red-700" :
+                            "bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:text-gray-500"
+                        )}
+                    >
+                        {testStatus === 'testing' ? (
+                            <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                <span>Testing...</span>
+                            </>
+                        ) : testStatus === 'success' ? (
+                            <>
+                                <CheckCircle2 className="w-4 h-4" />
+                                <span>Connected!</span>
+                            </>
+                        ) : testStatus === 'error' ? (
+                            <>
+                                <XCircle className="w-4 h-4" />
+                                <span>Failed — Retry</span>
+                            </>
+                        ) : (
+                            <span>Test Connection</span>
+                        )}
+                    </button>
+                    
+                    {/* Status Message */}
+                    {testMessage && (
+                        <div className={clsx(
+                            "mt-2 p-3 rounded-lg text-xs font-mono break-all",
+                            testStatus === 'success' ? "bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400 border border-green-100 dark:border-green-900/30" :
+                            testStatus === 'error' ? "bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border border-red-100 dark:border-red-900/30" :
+                            "bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
+                        )}>
+                            {testMessage}
+                        </div>
+                    )}
                 </div>
              </div>
           </div>

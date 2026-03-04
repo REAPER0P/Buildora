@@ -122,34 +122,36 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
       const editor = editorRef.current;
       if (!editor) return;
 
+      // 1. Always focus the editor first so it knows where to paste
+      editor.focus();
+
       try {
-          // Check if clipboard API is supported
-          if (!navigator.clipboard || !navigator.clipboard.readText) {
-              throw new Error("Clipboard API not supported");
+          // 2. Try modern Clipboard API first (works in secure contexts)
+          if (navigator.clipboard && navigator.clipboard.readText) {
+              const text = await navigator.clipboard.readText();
+              const selection = editor.getSelection();
+              
+              if (selection && text) {
+                  editor.executeEdits("clipboard", [{
+                      range: selection,
+                      text: text,
+                      forceMoveMarkers: true
+                  }]);
+                  editor.pushUndoStop();
+                  setPasted(true);
+                  setTimeout(() => setPasted(false), 2000);
+                  return;
+              }
           }
-
-          const text = await navigator.clipboard.readText();
+          throw new Error("Clipboard API not available or empty");
+      } catch (err) {
+          console.warn('Modern clipboard API failed, using fallback:', err);
           
-          const selection = editor.getSelection();
-          if (!selection) return;
-
-          // Execute edit directly using the selection object (which implements IRange)
-          editor.executeEdits("clipboard", [{
-              range: selection,
-              text: text,
-              forceMoveMarkers: true
-          }]);
-          
-          // Ensure this action is undoable separately
-          editor.pushUndoStop();
-          editor.focus();
-
+          // 3. Fallback: Try Monaco's native paste trigger
+          // This often works even when readText() fails, as it hooks into the browser's native paste event if possible
+          editor.trigger('source', 'editor.action.clipboardPasteAction', null);
           setPasted(true);
           setTimeout(() => setPasted(false), 2000);
-      } catch (err) {
-          console.error('Failed to paste:', err);
-          // Fallback or user notification
-          alert("Browser blocked paste. Please use Ctrl+V (Cmd+V) instead.");
       }
   };
 
@@ -189,43 +191,69 @@ const CodeEditor: React.FC<CodeEditorProps> = ({
     setAiError(null);
     setStreamingCode('');
 
-    const systemPrompt = `You are an elite UI/UX designer and frontend developer specializing in 2025 web design trends.
+    const systemPrompt = `## STRICT RULES ##
 
-STRICT DESIGN REQUIREMENTS (MANDATORY):
-- Use glassmorphism (frosted glass effects), neumorphism, or modern gradients
-- Use modern fonts (Inter, Poppins, Clash Display)
-- Implement asymmetric layouts with creative whitespace
-- Mobile-first responsive design
-- Use Tailwind CSS with modern utility classes
-- Make it look like Dribbble/Behance/Awwwards winning designs
+RULE 1 - PROJECT ANALYSIS FIRST:
+When user Open any code or project, FIRST perform complete analysis:
+- Scan all files, functions, variables, dependencies
+- Understand the full architecture and logic flow
+- Identify existing bugs, issues, or improvements
+- Report a summary: "Project analyzed. Here's what I found: [summary]"
+- Never skip this step.
 
-You MUST return files in this structured format:
+RULE 2 - ZERO BROKEN CODE POLICY:
+- NEVER give incomplete or broken code
+- Every code snippet must be 100% functional and ready to run
+- Always include all imports, dependencies, and required setup
+- If unsure about something, ASK before writing code
 
+RULE 3 - FULL FILE REPLACEMENT ONLY:
+- When editing code, ALWAYS return the COMPLETE updated file
+- Never return partial snippets like "// rest of code remains same"
+- Always write every single line of the file
+
+RULE 4 - CHANGE TRACKING:
+- Before making changes, list exactly what you will change and why
+- After changes, list what was changed with line numbers
+- Format: "CHANGED: [what] → [why]"
+
+RULE 5 - ERROR PREVENTION:
+- Before finalizing code, mentally run it step by step
+- Check for: syntax errors, missing brackets, undefined variables, import errors
+- If a change in one file affects another file, update BOTH files
+
+RULE 6 - CLARIFY BEFORE CODING:
+- If the user request is unclear, ask 1-2 specific questions first
+- Never assume and write wrong code
+
+RULE 7 - LANGUAGE CONSISTENCY:
+- Match the coding style, naming convention, and patterns already in the project
+- Do not introduce new patterns without asking
+
+RULE 8 - RESPONSE FORMAT:
+Always respond in this format:
+📊 ANALYSIS: [what you understood]
+🔧 CHANGES PLANNED: [list of changes]
+✅ FINAL CODE:
+\`\`\`[language]
+[complete working code]
+\`\`\`
+⚠️ IMPORTANT NOTES: [any warnings or things user should know]
+
+If modifying multiple files, use this format for the code section:
+✅ FINAL CODE:
 === index.html ===
-<full html code here>
-
-HTML file must NOT contain:
-  - <style> blocks
-  - <script> inline code
-- HTML must link properly:
-  <link rel="stylesheet" href="style.css">
-  <script src="script.js"></script>
-
+\`\`\`html
+[code]
+\`\`\`
 === style.css ===
-<full css code here>
-
-All styling must go inside style.css
-
+\`\`\`css
+[code]
+\`\`\`
 === script.js ===
-<full js code here>
-
-All JavaScript must go inside script.js
-
-Do NOT return explanations.
-Do NOT return combined code.
-Do NOT return markdown.
-Do NOT wrap inside \`\`\` blocks.
-Return only raw file-separated output.`;
+\`\`\`javascript
+[code]
+\`\`\``;
 
     try {
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -304,9 +332,15 @@ Return only raw file-separated output.`;
         
         // Parse multi-file format
         const extractContent = (marker: string) => {
-            const regex = new RegExp(`=== ${marker} ===\\s*([\\s\\S]*?)(?=\\n===|$)`, 'i');
+            // Try to match with markdown code blocks first
+            const regex = new RegExp(`=== ${marker} ===\\s*\\n*\`\`\`[a-z]*\\n([\\s\\S]*?)\\n\`\`\``, 'i');
             const match = fullContent.match(regex);
-            return match ? match[1].trim() : null;
+            if (match) return match[1].trim();
+            
+            // Fallback to format without markdown ticks
+            const regexOld = new RegExp(`=== ${marker} ===\\s*([\\s\\S]*?)(?=\\n===|\\n⚠️|$)`, 'i');
+            const matchOld = fullContent.match(regexOld);
+            return matchOld ? matchOld[1].replace(/^```[a-z]*\n/i, '').replace(/\n```$/, '').trim() : null;
         };
 
         const html = extractContent('index.html');
@@ -321,8 +355,23 @@ Return only raw file-separated output.`;
             
             onUpdateFiles(updates);
         } else {
-            // Fallback for single file or if format missing
-            let newCode = fullContent.replace(/^```[a-z]*\n/i, '').replace(/\n```$/, '').trim();
+            // Fallback for single file
+            let newCode = fullContent;
+            
+            // Try to extract from ✅ FINAL CODE section
+            const finalCodeMatch = fullContent.match(/✅ FINAL CODE:\s*\n*\`\`\`[a-z]*\n([\\s\\S]*?)\n\`\`\`/i);
+            if (finalCodeMatch) {
+                newCode = finalCodeMatch[1].trim();
+            } else {
+                // Try to find any code block
+                const codeBlockMatch = fullContent.match(/\`\`\`[a-z]*\n([\\s\\S]*?)\n\`\`\`/i);
+                if (codeBlockMatch) {
+                    newCode = codeBlockMatch[1].trim();
+                } else {
+                    newCode = fullContent.replace(/^```[a-z]*\n/i, '').replace(/\n```$/, '').trim();
+                }
+            }
+            
             onChange(newCode);
         }
         
